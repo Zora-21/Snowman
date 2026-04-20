@@ -57,8 +57,6 @@ public class SnowmanConfigurator {
     /** Sentinel for unreachable/infeasible distances. */
     public static final int UNREACHABLE = 100_000;
 
-    public static final double OBSTACLE_PUSH_COST = 2.0;
-
     // ==================================================================================
     // Fields
     // ==================================================================================
@@ -88,7 +86,6 @@ public class SnowmanConfigurator {
     private static final long CACHE_MASK = CACHE_SIZE - 1L;
     private final long[] groupingCacheKeys;
     private final double[] groupingCacheLowValues;
-    private final double[] groupingCacheUpValues;
     private int[][] cleanPushCache;
 
     private final int[] cleanDist;
@@ -101,20 +98,15 @@ public class SnowmanConfigurator {
     private int bestB1val, bestB2val; // top-2 B costs
     private int bestB1idx, bestB2idx; // their snow indices
 
-    // ---- Optimal path tracking (used by ENHSP tie-breaker) ----
-    private final Grouping[] currentPath;
-    private final Grouping[] optimalGroupings;
     private double globalBestCostLow;
-    private double globalBestCostUp;
 
     // ---- Working arrays for getBestScore ----
     private final double[] precomputedGroupCostsLow;
-    private final double[] precomputedGroupCostsUp;
     private final Grouping[] precomputedGroups;
     private final int[] sortedIndices;
 
     // Preallocated result for evaluateGrouping (zero-allocation on cache miss).
-    private final GroupingScore evalResult = new GroupingScore(0.0, 0.0);
+    private final GroupingScore evalResult = new GroupingScore(0.0);
 
     // ==================================================================================
     // Role permutations (static, shared across all instances)
@@ -137,19 +129,9 @@ public class SnowmanConfigurator {
 
     public static class GroupingScore {
         public double low;
-        public double up;
-        public int bestTgt;
-        public int bestBaseId;
-        public int bestMidId;
-        public int bestHeadId;
 
-        public GroupingScore(double low, double up) {
+        public GroupingScore(double low) {
             this.low = low;
-            this.up = up;
-            this.bestTgt = -1;
-            this.bestBaseId = -1;
-            this.bestMidId = -1;
-            this.bestHeadId = -1;
         }
     }
 
@@ -161,9 +143,7 @@ public class SnowmanConfigurator {
         return snowFingerprint;
     }
 
-    public Grouping[] getOptimalGroupings() {
-        return optimalGroupings;
-    }
+
 
     // ==================================================================================
     // Constructor
@@ -178,8 +158,6 @@ public class SnowmanConfigurator {
         this.activeSnowCells = new int[numLocations];
         this.isActiveBalls = new boolean[this.numBalls];
         this.usedBalls = new boolean[this.numBalls];
-        this.currentPath = new Grouping[maxSnowmen];
-        this.optimalGroupings = new Grouping[maxSnowmen];
 
         this.cleanPushCache = new int[numLocations][numLocations];
         for (int i = 0; i < numLocations; i++) {
@@ -201,13 +179,11 @@ public class SnowmanConfigurator {
 
         int mg = allGroupings.size();
         this.precomputedGroupCostsLow = new double[mg];
-        this.precomputedGroupCostsUp = new double[mg];
         this.precomputedGroups = new Grouping[mg];
         this.sortedIndices = new int[mg];
 
         this.groupingCacheKeys = new long[CACHE_SIZE];
         this.groupingCacheLowValues = new double[CACHE_SIZE];
-        this.groupingCacheUpValues = new double[CACHE_SIZE];
         Arrays.fill(this.groupingCacheKeys, -1L);
 
         // cleanPushCache already initialized at line 180 with fill(-1)
@@ -261,7 +237,7 @@ public class SnowmanConfigurator {
     public GroupingScore getBestScore(List<Ball> activeBalls, int targetSnowmen,
             int[] currentSizes, int[] currentLocs) {
         if (activeBalls.size() < 3 * targetSnowmen)
-            return new GroupingScore(Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY);
+            return new GroupingScore(Double.POSITIVE_INFINITY);
 
         Arrays.fill(isActiveBalls, false);
         for (Ball b : activeBalls)
@@ -280,53 +256,42 @@ public class SnowmanConfigurator {
 
             int cacheIdx = (int) (hash & CACHE_MASK);
 
-            double costLow, costUp;
+            double costLow;
             if (groupingCacheKeys[cacheIdx] == hash) {
                 costLow = groupingCacheLowValues[cacheIdx];
-                costUp = groupingCacheUpValues[cacheIdx];
             } else {
                 evaluateGroupingFast(g, currentSizes, currentLocs);
                 costLow = evalResult.low;
-                costUp = evalResult.up;
                 if (costLow < UNREACHABLE) {
                     groupingCacheKeys[cacheIdx] = hash;
                     groupingCacheLowValues[cacheIdx] = costLow;
-                    groupingCacheUpValues[cacheIdx] = costUp;
                 }
             }
             precomputedGroups[validCount] = g;
             precomputedGroupCostsLow[validCount] = costLow;
-            precomputedGroupCostsUp[validCount] = costUp;
             sortedIndices[validCount] = validCount;
             validCount++;
         }
 
         if (validCount == 0)
-            return new GroupingScore(Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY);
+            return new GroupingScore(Double.POSITIVE_INFINITY);
 
         globalBestCostLow = Double.POSITIVE_INFINITY;
-        globalBestCostUp = Double.POSITIVE_INFINITY;
-        Arrays.fill(optimalGroupings, null);
 
         if (targetSnowmen == 1) {
-            double minL = Double.POSITIVE_INFINITY, minU = Double.POSITIVE_INFINITY;
-            int bi = -1;
+            double minL = Double.POSITIVE_INFINITY;
             for (int i = 0; i < validCount; i++) {
-                double cl = precomputedGroupCostsLow[i], cu = precomputedGroupCostsUp[i];
-                if (cl < minL || (cl == minL && cu < minU)) {
+                double cl = precomputedGroupCostsLow[i];
+                if (cl < minL) {
                     minL = cl;
-                    minU = cu;
-                    bi = i;
                 }
             }
-            if (bi != -1)
-                optimalGroupings[0] = precomputedGroups[bi];
-            return new GroupingScore(minL, minU);
+            return new GroupingScore(minL);
         }
 
-        primitiveSort(sortedIndices, precomputedGroupCostsLow, precomputedGroupCostsUp, 0, validCount - 1);
+        primitiveSort(sortedIndices, precomputedGroupCostsLow, 0, validCount - 1);
         Arrays.fill(usedBalls, false);
-        return backtrackRecursive(sortedIndices, validCount, 0, targetSnowmen, usedBalls, 0.0, 0.0, 0);
+        return backtrackRecursive(sortedIndices, validCount, 0, targetSnowmen, usedBalls, 0.0);
     }
 
     // ==================================================================================
@@ -334,19 +299,17 @@ public class SnowmanConfigurator {
     // ==================================================================================
 
     private GroupingScore backtrackRecursive(int[] si, int vc, int start, int rem, boolean[] used,
-            double cLow, double cUp, int depth) {
+            double cLow) {
         if (rem == 0) {
-            if (cLow < globalBestCostLow || (cLow == globalBestCostLow && cUp < globalBestCostUp)) {
+            if (cLow < globalBestCostLow) {
                 globalBestCostLow = cLow;
-                globalBestCostUp = cUp;
-                System.arraycopy(currentPath, 0, optimalGroupings, 0, depth);
             }
-            return new GroupingScore(cLow, cUp);
+            return new GroupingScore(cLow);
         }
-        GroupingScore best = new GroupingScore(Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY);
+        GroupingScore best = new GroupingScore(Double.POSITIVE_INFINITY);
         for (int i = start; i < vc; i++) {
             int idx = si[i];
-            double cl = precomputedGroupCostsLow[idx], cu = precomputedGroupCostsUp[idx];
+            double cl = precomputedGroupCostsLow[idx];
             double bnd = cLow + cl * rem;
             if (bnd > best.low)
                 break;
@@ -357,11 +320,9 @@ public class SnowmanConfigurator {
             if (used[ids[0]] || used[ids[1]] || used[ids[2]])
                 continue;
             used[ids[0]] = used[ids[1]] = used[ids[2]] = true;
-            currentPath[depth] = g;
-            GroupingScore res = backtrackRecursive(si, vc, i + 1, rem - 1, used, cLow + cl, cUp + cu, depth + 1);
-            if (res.low < best.low || (res.low == best.low && res.up < best.up)) {
+            GroupingScore res = backtrackRecursive(si, vc, i + 1, rem - 1, used, cLow + cl);
+            if (res.low < best.low) {
                 best.low = res.low;
-                best.up = res.up;
             }
             used[ids[0]] = used[ids[1]] = used[ids[2]] = false;
         }
@@ -633,10 +594,7 @@ public class SnowmanConfigurator {
                 : res;
     }
 
-    public GroupingScore getOptimalRolesAndTarget(Grouping g, int[] currentSizes, int[] currentLocs) {
-        evaluateGroupingFast(g, currentSizes, currentLocs);
-        return evalResult;
-    }
+
 
     private void evaluateGroupingFast(Grouping group, int[] currentSizes, int[] currentLocs) {
         int id0 = group.getBallIntIds()[0];
@@ -651,9 +609,6 @@ public class SnowmanConfigurator {
         int[] ballSzs = { currentSizes[id0], currentSizes[id1], currentSizes[id2] };
 
         double bestLow = Double.POSITIVE_INFINITY;
-        double bestUp = Double.POSITIVE_INFINITY;
-        int bestTarget = -1;
-        int bestBase = -1, bestMid = -1, bestHead = -1;
 
         for (int tgt = 0; tgt < numLocations; tgt++) {
             // --- Target pruning (admissible lower bound) ---
@@ -704,69 +659,19 @@ public class SnowmanConfigurator {
                 if (costC >= UNREACHABLE)
                     continue;
 
-                // Compute cleanFallbackPenalty BEFORE the early exit so
-                // that totalUp is always correctly penalised, even when jointCostAB+costC
-                // already beats bestLow. The penalty only affects h_up (tie-breaking),
-                // never h_balls, so admissibility is preserved.
-                double cleanFallbackPenalty = 0.0;
-                if (gB == 0 && pushDistMatrix[locB][tgt] < UNREACHABLE) {
-                    int cleanB = computeCleanPushDist(locB, tgt);
-                    if (cleanB > pushDistMatrix[locB][tgt])
-                        cleanFallbackPenalty += 1000.0;
-                }
-                // Head ball (locC) always uses clean path
-                if (pushDistMatrix[locC][tgt] < UNREACHABLE) {
-                    int cleanC = computeCleanPushDist(locC, tgt);
-                    if (cleanC > pushDistMatrix[locC][tgt])
-                        cleanFallbackPenalty += 1000.0;
-                }
-
-                // Early exit: if this permutation's base cost alone can't beat bestLow,
-                // skip the heavier penalty computation — but only after the penalty is set.
                 if (jointCostAB + costC >= bestLow)
                     continue;
 
                 double penalty = computePopPenalty(locA, locB, locC, tgt);
                 double totalLow = jointCostAB + costC + penalty; // admissible lower bound
 
-                double obstaclePenalty = 0.0;
-
-                for (int bOther = 0; bOther < numBalls; bOther++) {
-                    if (!isActiveBalls[bOther])
-                        continue;
-                    if (bOther == id0 || bOther == id1 || bOther == id2)
-                        continue;
-                    int locOther = currentLocs[bOther];
-
-                    if (jointCostAB < UNREACHABLE && pushDistMatrix[locA][locOther]
-                            + pushDistMatrix[locOther][tgt] == pushDistMatrix[locA][tgt])
-                        obstaclePenalty += OBSTACLE_PUSH_COST;
-                    if (jointCostAB < UNREACHABLE && pushDistMatrix[locB][locOther]
-                            + pushDistMatrix[locOther][tgt] == pushDistMatrix[locB][tgt])
-                        obstaclePenalty += OBSTACLE_PUSH_COST;
-                    if (costC < UNREACHABLE && pushDistMatrix[locC][locOther]
-                            + pushDistMatrix[locOther][tgt] == pushDistMatrix[locC][tgt])
-                        obstaclePenalty += OBSTACLE_PUSH_COST;
-                }
-                double totalUp = totalLow + obstaclePenalty + cleanFallbackPenalty;
-
-                if (totalLow < bestLow || (totalLow == bestLow && totalUp < bestUp)) {
+                if (totalLow < bestLow) {
                     bestLow = totalLow;
-                    bestUp = totalUp;
-                    bestTarget = tgt;
-                    bestBase = group.getBallIntIds()[iA];
-                    bestMid = group.getBallIntIds()[iB];
-                    bestHead = group.getBallIntIds()[iC];
                 }
             }
         }
 
         evalResult.low = (bestLow >= UNREACHABLE) ? UNREACHABLE : bestLow;
-        evalResult.up = (bestUp >= UNREACHABLE) ? UNREACHABLE : bestUp;
-        evalResult.bestTgt = bestTarget;
-        evalResult.bestBaseId = bestBase;
-        evalResult.bestMidId = bestMid;
-        evalResult.bestHeadId = bestHead;
     }
 
     // ==================================================================================
@@ -801,20 +706,9 @@ public class SnowmanConfigurator {
 
     private long computeGroupHash(Ball b0, Ball b1, Ball b2, int[] sz, int[] lc) {
         long h = snowFingerprint;
-        // Hash delle palle del gruppo (con taglia)
         h ^= (lc[b0.getIntId()] * 131L + sz[b0.getIntId()]) * 1_000_000_007L;
         h ^= (lc[b1.getIntId()] * 131L + sz[b1.getIntId()]) * 1_000_000_009L;
         h ^= (lc[b2.getIntId()] * 131L + sz[b2.getIntId()]) * 1_000_000_021L;
-
-        // Include active ball positions OUTSIDE the grouping for obstaclePenalty
-        // invalidation. The 3 grouping balls are already hashed above with distinct
-        // prime multipliers — including them again would only reduce cache hit rate.
-        int id0 = b0.getIntId(), id1 = b1.getIntId(), id2 = b2.getIntId();
-        for (int i = 0; i < numBalls; i++) {
-            if (isActiveBalls[i] && i != id0 && i != id1 && i != id2) {
-                h = h * 31L + lc[i];
-            }
-        }
 
         h ^= h >>> 33;
         h *= 0xff51afd7ed558ccdL;
@@ -824,16 +718,16 @@ public class SnowmanConfigurator {
         return h;
     }
 
-    private void primitiveSort(int[] idx, double[] kl, double[] ku, int lo, int hi) {
+    private void primitiveSort(int[] idx, double[] kl, int lo, int hi) {
         int len = hi - lo + 1;
         if (len < 2)
             return;
         if (len < 32) {
             for (int i = lo + 1; i <= hi; i++) {
                 int ki = idx[i];
-                double kli = kl[ki], kui = ku[ki];
+                double kli = kl[ki];
                 int j = i - 1;
-                while (j >= lo && (kl[idx[j]] > kli || (kl[idx[j]] == kli && ku[idx[j]] > kui))) {
+                while (j >= lo && kl[idx[j]] > kli) {
                     idx[j + 1] = idx[j];
                     j--;
                 }
@@ -842,12 +736,12 @@ public class SnowmanConfigurator {
             return;
         }
         int pi = lo + (hi - lo) / 2;
-        double pl = kl[idx[pi]], pu = ku[idx[pi]];
+        double pl = kl[idx[pi]];
         int i = lo, j = hi;
         while (i <= j) {
-            while (kl[idx[i]] < pl || (kl[idx[i]] == pl && ku[idx[i]] < pu))
+            while (kl[idx[i]] < pl)
                 i++;
-            while (kl[idx[j]] > pl || (kl[idx[j]] == pl && ku[idx[j]] > pu))
+            while (kl[idx[j]] > pl)
                 j--;
             if (i <= j) {
                 int t = idx[i];
@@ -857,7 +751,7 @@ public class SnowmanConfigurator {
                 j--;
             }
         }
-        primitiveSort(idx, kl, ku, lo, j);
-        primitiveSort(idx, kl, ku, i, hi);
+        primitiveSort(idx, kl, lo, j);
+        primitiveSort(idx, kl, i, hi);
     }
 }
