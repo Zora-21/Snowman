@@ -2,10 +2,14 @@ benchmark.py
 extract_plan_metrics.py
 generate_results_dashboard.py
 KEPS-23_paper_9560.pdf
+plan_symk_BEST
 script/
 Results/
 bin/
 Out/
+run.sh
+snowman.tex
 Project_dh/plan/1-snowman/*
 Project_dh/plan/2-snowmen/*
 Project_dh/plan/3-snowmen/*
+plot/
