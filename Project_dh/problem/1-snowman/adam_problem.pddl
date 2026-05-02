@@ -1,8 +1,6 @@
 (define (problem adam-adapted-for-multi-goal)
-    ;; ADATTATO: Il dominio di riferimento è ora quello originale 'snowman_multi_goal'
     (:domain snowman_multi_goal)
 
-    ;; Gli oggetti definiti sono corretti e rimangono invariati
     (:objects
         right - direction
         left - direction
@@ -36,7 +34,7 @@
 
     (:init
         (= (total-cost) 0)
-        (=(goal) 0)
+        (=(snowman_built) 0)
 
         (next loc_1_1 loc_2_1 right)
         (next loc_1_1 loc_1_2 up)
@@ -118,9 +116,9 @@
         (snow loc_5_5)
     )
 
-    (:goal (and
-        (=(goal) 1)
-    ))
+    (:goal 
+        (=(snowman_built) 1)
+    )
 
     (:metric minimize (total-cost))
 )

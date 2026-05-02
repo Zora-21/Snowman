@@ -36,7 +36,7 @@
 
     (:init
         (= (total-cost) 0)
-        (=(goal) 0)
+        (=(snowman_built) 0)
 
         (next loc_1_2 loc_2_2 right)
         (next loc_1_2 loc_1_3 up)
@@ -122,7 +122,7 @@
     )
 
     (:goal
-        (=(goal) 1)
+        (=(snowman_built) 1)
     )
 
     (:metric minimize (total-cost))

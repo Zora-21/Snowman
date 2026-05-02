@@ -4,63 +4,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/**
- * SnowmanConfigurator – Heuristic push-cost estimator for the Snowman planning
- * problem.
- *
- * ===== KEY DESIGN: Snow Contention =====
- *
- * The dominant source of underestimation in the Snowman heuristic is "snow
- * sharing":
- * when computing costs independently for each ball, two balls are allowed to
- * plan
- * their growth through the SAME snow cell. In the actual problem a snow cell
- * disappears after one ball rolls over it – the second ball must find a
- * different
- * (possibly much more expensive) snow cell.
- *
- * evaluateGrouping() now iterates over ROLE PERMUTATIONS explicitly and,
- * for
- * each (permutation, meeting-location) pair, computes the joint minimum-cost
- * snow
- * assignment forcing distinct snow cells across all balls that need to grow.
- *
- * Two joint-snow helpers are provided:
- *
- * computeJointSnow1_1(locA, locB, tgt) gA=1, gB=1 O(S²)
- * Both role-3 ball (size 2) and role-2 ball (size 1) need exactly 1 snow cell.
- *
- * computeJointSnow2_1(locA, locB, tgt) gA=2, gB=1 O(S³)
- * Role-3 ball needs 2 snow cells, role-2 ball needs 1 snow cell.
- * All three cells must be distinct.
- * This is the MOST COMMON initial-state case (all balls at size 1).
- *
- * With |activeSnowCells| ≤ ~20, S²=400 and S³=8000 are negligible.
- *
- * ===== Other lower-bound improvements =====
- *
- * - obsDist: obstacle-aware push distance (weight 2 for cells occupied by
- * non-grouping balls).
- * - cleanPath BFS: balls with g=0 must not touch snow → cached BFS on snow-free
- * subgraph.
- * - popPenalty: extra pushes when a smaller ball is already at the meeting
- * location
- * and must be popped before the larger one can arrive.
- * - pushDistMatrix: injected from ENHSP after a 0-1 BFS (push=1, walk=0).
- */
 public class SnowmanConfigurator {
 
-    // ==================================================================================
-    // Constants
-    // ==================================================================================
-
-    /** Sentinel for unreachable/infeasible distances. */
     public static final int UNREACHABLE = 100_000;
 
-    // ==================================================================================
     // Fields
-    // ==================================================================================
-
     private final int numLocations;
     private final int numBalls;
     private final int maxSnowmen;
@@ -94,9 +42,9 @@ public class SnowmanConfigurator {
     private final java.util.ArrayDeque<Integer> cleanDq;
 
     // Pre-allocated arrays for computeJointSnow optimization
-    private int[] bestBcost; // bestBcost[k] = pushDist[locB][snow_k] + pushDist[snow_k][tgt]
-    private int bestB1val, bestB2val; // top-2 B costs
-    private int bestB1idx, bestB2idx; // their snow indices
+    private int[] bestBcost;
+    private int bestB1val, bestB2val, bestB3val;
+    private int bestB1idx, bestB2idx, bestB3idx;
 
     private double globalBestCostLow;
 
@@ -123,10 +71,6 @@ public class SnowmanConfigurator {
             { 2, 1, 0 }, // b2→role3, b1→role2, b0→role1
     };
 
-    // ==================================================================================
-    // Public API
-    // ==================================================================================
-
     public static class GroupingScore {
         public double low;
 
@@ -142,8 +86,6 @@ public class SnowmanConfigurator {
     public long getSnowFingerprint() {
         return snowFingerprint;
     }
-
-
 
     // ==================================================================================
     // Constructor
@@ -185,8 +127,6 @@ public class SnowmanConfigurator {
         this.groupingCacheKeys = new long[CACHE_SIZE];
         this.groupingCacheLowValues = new double[CACHE_SIZE];
         Arrays.fill(this.groupingCacheKeys, -1L);
-
-        // cleanPushCache already initialized at line 180 with fill(-1)
     }
 
     public void setPushDistMatrix(int[][] m) {
@@ -221,7 +161,6 @@ public class SnowmanConfigurator {
             }
         }
 
-        // Svuotiamo la cache SOLO se l'impronta della neve è cambiata
         if (this.snowFingerprint != fp) {
             this.snowFingerprint = fp;
             for (int i = 0; i < numLocations; i++) {
@@ -330,16 +269,11 @@ public class SnowmanConfigurator {
     }
 
     // ==================================================================================
-    // evaluateGrouping — CORE: explicit permutations + joint snow assignment
+    // computeJointSnow
     // ==================================================================================
-    // ==================================================================================
-    // computeJointSnow — FULLY DYNAMIC snow detour computation
-    // ==================================================================================
-    //
     // Uses activeSnowCells (updated every call via updateEnvironment) for ALL
     // cases.
     // Uses activeSnowCells to keep detours updated after snowman completion.
-
     private double computeJointSnow(int locA, int gA, int locB, int gB, int tgt) {
         // (0,0): no snow needed — A (sz=3) can cross snow, B (sz=2, g=0) must NOT!
         if (gA == 0 && gB == 0)
@@ -360,7 +294,7 @@ public class SnowmanConfigurator {
             }
             return best + computeCleanPushDist(locB, tgt);
         }
-        // (0,1): symmetric
+        // (0,1) symmetric
         if (gA == 0 && gB == 1) {
             double best = UNREACHABLE;
             for (int i = 0; i < S; i++) {
@@ -391,50 +325,40 @@ public class SnowmanConfigurator {
             }
             return best + computeCleanPushDist(locB, tgt);
         }
-        // (0,2): symmetric
-        if (gA == 0 && gB == 2) {
-            double best = UNREACHABLE;
-            for (int i = 0; i < S; i++) {
-                int s1 = activeSnowCells[i];
-                int d1 = pushDistMatrix[locB][s1];
-                if (d1 >= UNREACHABLE)
-                    continue;
-                for (int j = 0; j < S; j++) {
-                    if (i == j)
-                        continue;
-                    int s2 = activeSnowCells[j];
-                    int d = d1 + pushDistMatrix[s1][s2] + pushDistMatrix[s2][tgt];
-                    if (d < best)
-                        best = d;
-                }
-            }
-            return pushDistMatrix[locA][tgt] + best;
-        }
 
         double bestCost = UNREACHABLE;
 
-        // --- OPTIMIZATION: Precompute B's best-via-1-snow costs ---
         // For each snow cell k, compute costB[k] = pushDist[locB][snow_k] +
         // pushDist[snow_k][tgt]
-        // Also track the top-2 best values so we can exclude specific indices in O(1).
+        // Also track the top-3 best values so we can exclude specific indices in O(1).
         if (bestBcost == null || bestBcost.length < S)
             bestBcost = new int[S];
         bestB1val = UNREACHABLE;
         bestB2val = UNREACHABLE;
-        bestB1idx = -1;
+        bestB3val = UNREACHABLE;
         bestB2idx = -1;
+        bestB3idx = -1;
+
         for (int k = 0; k < S; k++) {
             int sk = activeSnowCells[k];
             int c = pushDistMatrix[locB][sk] + pushDistMatrix[sk][tgt];
             bestBcost[k] = c;
+
             if (c < bestB1val) {
+                bestB3val = bestB2val;
+                bestB3idx = bestB2idx;
                 bestB2val = bestB1val;
                 bestB2idx = bestB1idx;
                 bestB1val = c;
                 bestB1idx = k;
             } else if (c < bestB2val) {
+                bestB3val = bestB2val;
+                bestB3idx = bestB2idx;
                 bestB2val = c;
                 bestB2idx = k;
+            } else if (c < bestB3val) {
+                bestB3val = c;
+                bestB3idx = k;
             }
         }
 
@@ -473,26 +397,17 @@ public class SnowmanConfigurator {
                         continue;
                     // Best B excluding snow indices i and j
                     int cB;
-                    if (bestB1idx != i && bestB1idx != j)
+                    if (bestB1idx != i && bestB1idx != j) {
                         cB = bestB1val;
-                    else if (bestB2idx != i && bestB2idx != j)
+                    } else if (bestB2idx != i && bestB2idx != j) {
                         cB = bestB2val;
-                    else {
-                        // top-2 both excluded by A's choices — scan remaining cells
-                        cB = UNREACHABLE;
-                        for (int kk = 0; kk < S; kk++) {
-                            if (kk != i && kk != j && bestBcost[kk] < cB)
-                                cB = bestBcost[kk];
-                        }
+                    } else {
+                        cB = bestB3val;
                     }
                     if (cA + cB < bestCost)
                         bestCost = cA + cB;
                 }
             }
-        }
-        // (1,2): symmetric
-        else if (gA == 1 && gB == 2) {
-            return computeJointSnow(locB, gB, locA, gA, tgt);
         }
         return bestCost;
     }
@@ -512,7 +427,6 @@ public class SnowmanConfigurator {
         if (adjList == null)
             return pushDistMatrix[from][to];
 
-        // Ritorno istantaneo se la BFS da 'from' è già stata calcolata
         if (cleanPushCache[from][0] != -1) {
             int res = cleanPushCache[from][to];
             return (res >= UNREACHABLE && pushDistMatrix[from][to] < UNREACHABLE)
@@ -521,7 +435,7 @@ public class SnowmanConfigurator {
         }
 
         int N = numLocations;
-        // Uso delle strutture pre-allocate azzerandole
+
         Arrays.fill(cleanDist, UNREACHABLE);
         Arrays.fill(cleanVis, false);
         Arrays.fill(cleanBestTo, UNREACHABLE);
@@ -551,7 +465,7 @@ public class SnowmanConfigurator {
                 int nextC = adjList[c][ai];
 
                 if (nextC == b) {
-                    // PUSH: la direzione della palla
+                    // PUSH
                     int pushDir = adjDir[c][ai];
                     int targetNextB = -1;
                     for (int bi = 0; bi < adjList[b].length; bi++) {
@@ -560,7 +474,7 @@ public class SnowmanConfigurator {
                             break;
                         }
                     }
-                    // LA PALLA (NON IL PERSONAGGIO) NON DEVE FINIRE SULLA NEVE
+
                     if (targetNextB != -1 && !(currentSnow != null && currentSnow[targetNextB])) {
                         int nextState = b * N + targetNextB;
                         int newDist = d + 1;
@@ -573,7 +487,7 @@ public class SnowmanConfigurator {
                         }
                     }
                 } else {
-                    // WALK: Il personaggio cammina liberamente (anche sulla neve!)
+                    // WALK
                     int nextState = nextC * N + b;
                     if (d < cleanDist[nextState]) {
                         cleanDist[nextState] = d;
@@ -583,7 +497,6 @@ public class SnowmanConfigurator {
             }
         }
 
-        // Salviamo in blocco tutte le distanze calcolate da 'from' verso ogni 'to'
         for (int i = 0; i < N; i++) {
             cleanPushCache[from][i] = cleanBestTo[i];
         }
@@ -593,8 +506,6 @@ public class SnowmanConfigurator {
                 ? pushDistMatrix[from][to]
                 : res;
     }
-
-
 
     private void evaluateGroupingFast(Grouping group, int[] currentSizes, int[] currentLocs) {
         int id0 = group.getBallIntIds()[0];
@@ -637,7 +548,7 @@ public class SnowmanConfigurator {
             }
             // d0+d1+d2 is an admissible lower bound on the total cost for any assignment
             if ((long) d0 + d1 + d2 >= (long) bestLow)
-                continue; // This target cannot beat the current best
+                continue;
 
             for (int[] perm : ROLE_PERMS) {
                 int iA = perm[0], iB = perm[1], iC = perm[2];
@@ -663,7 +574,7 @@ public class SnowmanConfigurator {
                     continue;
 
                 double penalty = computePopPenalty(locA, locB, locC, tgt);
-                double totalLow = jointCostAB + costC + penalty; // admissible lower bound
+                double totalLow = jointCostAB + costC + penalty;
 
                 if (totalLow < bestLow) {
                     bestLow = totalLow;

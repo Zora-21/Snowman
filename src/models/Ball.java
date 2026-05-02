@@ -2,9 +2,9 @@ package models;
 
 public class Ball {
     private final String id;
-    private final int intId; // 0..N-1, assigned at construction
+    private final int intId;
     private int size;
-    private int locId; // Graph Node ID
+    private int locId;
 
     public Ball(String id, int intId, int size, int locId) {
         this.id = id;

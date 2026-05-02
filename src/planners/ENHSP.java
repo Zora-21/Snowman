@@ -57,10 +57,6 @@ import java.util.logging.Logger;
 
 public class ENHSP {
 
-    // ==================================================================================
-    // Standard ENHSP fields
-    // ==================================================================================
-
     private String domainFile;
     private String problemFile;
     private String searchEngineString;
@@ -101,57 +97,21 @@ public class ENHSP {
     // Snowman-specific fields
     // ==================================================================================
 
-    /** Names of ball objects extracted from the PDDL problem. */
     private List<String> ballNames = new ArrayList<>();
 
-    /** Number of snowmen to build (= ballNames.size() / 3). */
     private int targetSnowmen = 0;
 
-    /** Grounded boolean fluents, copied from the PPMAJAL problem instance. */
     private HashSet<BoolPredicate> groundedBooleanFluents;
 
-    /**
-     * All-Pairs Shortest Path over the maze graph (character movement, cost =
-     * hops).
-     */
     private int[][] distanceMatrix;
 
-    /** dirMatrix[u][v] = direction label of the edge u→v (null if not adjacent). */
     private int[][] dirMatrix;
 
-    /**
-     * pushDistMatrix[a][b] = minimum number of ball PUSHES to move a ball
-     * from location a to location b.
-     *
-     * Computed via 0-1 BFS where
-     * - character walk edges have cost 0 (move_character costs nothing in the
-     * metric)
-     * - ball push edges have cost 1 (move_ball costs 1 in the metric)
-     *
-     * The previous implementation used a uniform BFS (cost 1 for every edge),
-     * which inflated all estimates and made the heuristic inadmissible.
-     */
     private int[][] pushDistMatrix;
 
-    /**
-     * isDeadEndNode[i] = true if node i has degree ≤ 1 in the maze graph.
-     * A ball pushed into a dead-end cannot be pushed out again.
-     */
     private boolean[] isDeadEndNode;
-    /**
-     * isCornerNode[i] = true if node i has degree = 2 with orthogonal directions.
-     * A ball pushed into a corner can never leave (Sokoban freeze rule).
-     */
     private boolean[] isCornerNode;
 
-    /**
-     * Adjacency lists built from dirMatrix for O(deg) iteration.
-     * adjList[u] = array of neighbors v where dirMatrix[u][v] != -1
-     * adjDir[u] = corresponding direction labels (parallel to adjList)
-     * oppAdj[u] = for each neighbor v in adjList[u], the single neighbor w
-     * of u in the OPPOSITE direction (or -1 if none).
-     * Used for push-feasibility: to push u→v, char must be at oppAdj[u][i].
-     */
     private int[][] adjList;
     private int[][] adjDir;
     private int[][] oppAdj;
@@ -192,10 +152,6 @@ public class ENHSP {
     public int getPlanLength() {
         return planLength;
     }
-
-    // ==================================================================================
-    // Domain / problem parsing (unchanged from original ENHSP)
-    // ==================================================================================
 
     public Pair<PDDLDomain, PDDLProblem> parseDomainProblem(String domainFile,
             String problemFile, String delta, PrintStream out) {
@@ -268,20 +224,6 @@ public class ENHSP {
     // ==================================================================================
     // Snowman preprocessing
     // ==================================================================================
-
-    /**
-     * Extracts maze topology and ball objects from the PDDL problem, then:
-     * 1. Builds a dirMatrix (adjacency with direction labels) from the "next"
-     * predicates.
-     * 2. Computes all-pairs shortest path (Floyd-Warshall, used for character
-     * reachability).
-     * 3. Computes pushDistMatrix via a 0-1 BFS:
-     * walk cost = 0, push cost = 1.
-     * The multi-source variant (all valid character starting positions at cost 0)
-     * gives the minimum pushes to move a ball from A to B regardless of where the
-     * character starts — which is the correct relaxation for this heuristic.
-     * 4. Identifies dead-end nodes (degree ≤ 1) for dead-end detection.
-     */
 
     private int directionToInt(String dir) {
         // Removes any quotes or spaces and converts to lowercase
@@ -448,8 +390,7 @@ public class ENHSP {
         // can start anywhere without extra cost.
         // =====================================================================
 
-        // walkDistMatrix removed — identical to distanceMatrix
-        // (Floyd-Warshall)
+        // walkDistMatrix removed — identical to distanceMatrix (Floyd-Warshall)
 
         pushDistMatrix = new int[N][N];
         for (int i = 0; i < N; i++)
@@ -457,8 +398,6 @@ public class ENHSP {
 
         int[] bfsDist01 = new int[N * N];
 
-        // ArrayDeque is used here because this is a one-time preprocessing step
-        // (not on the hot path); correctness and clarity take priority.
         ArrayDeque<Integer> deque = new ArrayDeque<>(N * N);
 
         boolean[] visited01 = new boolean[N * N];
@@ -466,43 +405,38 @@ public class ENHSP {
         for (int startBall = 0; startBall < N; startBall++) {
             pushDistMatrix[startBall][startBall] = 0;
 
-            // Reset delle strutture per la nuova palla di partenza
             Arrays.fill(bfsDist01, models.SnowmanConfigurator.UNREACHABLE);
 
-            // Reset visitati a false per questa ricerca
             Arrays.fill(visited01, false);
 
             deque.clear();
 
-            // Inseriamo in coda tutte le posizioni di partenza del personaggio a costo 0
             for (int startChar = 0; startChar < N; startChar++) {
                 if (startChar == startBall)
                     continue;
                 int s = startChar * N + startBall;
 
                 bfsDist01[s] = 0;
-                deque.addFirst(s); // Walk = costo 0, va in testa
+                deque.addFirst(s);
             }
 
-            // Inizio esplorazione
             while (!deque.isEmpty()) {
                 int state = deque.pollFirst();
 
-                // Se questo stato è già stato espanso, saltiamo l'iterazione
                 if (visited01[state]) {
                     continue;
                 }
                 visited01[state] = true;
 
-                int c = state / N; // Posizione attuale del personaggio
-                int b = state % N; // Posizione attuale della palla
-                int d = bfsDist01[state]; // Costo (numero di push) per arrivare qui
+                int c = state / N;
+                int b = state % N;
+                int d = bfsDist01[state];
 
                 for (int ai = 0; ai < adjList[c].length; ai++) {
                     int nextC = adjList[c][ai];
 
                     if (nextC == b) {
-                        // PUSH: find nextB via adjList
+                        // PUSH
                         int pushDir = dirMatrix[c][b];
                         int targetNextB = -1;
                         for (int aii = 0; aii < adjList[b].length; aii++) {
@@ -549,10 +483,6 @@ public class ENHSP {
         System.out.println("=========================================");
     }
 
-    // ==================================================================================
-    // Planning loop (unchanged from original ENHSP)
-    // ==================================================================================
-
     public void planning() {
         try {
             printStats();
@@ -571,10 +501,6 @@ public class ENHSP {
             Logger.getLogger(ENHSP.class.getName()).log(Level.SEVERE, null, ex);
         }
     }
-
-    // ==================================================================================
-    // Command-line argument parsing (unchanged)
-    // ==================================================================================
 
     public void parseInput(String[] args) {
         Options options = new Options();
@@ -767,10 +693,6 @@ public class ENHSP {
         }
     }
 
-    // ==================================================================================
-    // Search (unchanged from original ENHSP)
-    // ==================================================================================
-
     private LinkedList<Pair<BigDecimal, Object>> search() throws Exception {
         LinkedList<Pair<BigDecimal, Object>> rawPlan = null;
         final PDDLSearchEngine searchEngine = new PDDLSearchEngine(problem, h);
@@ -911,18 +833,16 @@ public class ENHSP {
     }
 
     // ==================================================================================
-    // SnowmanHeuristic inner class
+    // SnowmanHeuristic
     // ==================================================================================
 
     public class SnowmanHeuristic implements SearchHeuristic {
-
-        // --- Tracker inner classes ---
 
         private class BallTracker {
             final Ball ballInstance;
             final List<BoolPredLocPair> locationPredicates;
             final NumFluent sizeFluent;
-            final int fixedLocId; // fallback if grounder misses this ball
+            final int fixedLocId;
             final int fixedSize;
 
             BallTracker(Ball ball, List<BoolPredLocPair> lps, NumFluent sf, int fixedLoc, int fixedSz) {
@@ -945,9 +865,6 @@ public class ENHSP {
         }
 
         private class CellTracker {
-            // snowPredicate may be null if the grounder did not produce this fluent.
-            // In that case the cell is not tracked (treated as snow-free → admissible
-            // under-estimate).
             BoolPredicate snowPredicate;
             final int locId;
 
@@ -1594,7 +1511,6 @@ public class ENHSP {
         private Collection<TransitionGround> computeHelpfulTransitions(State state) {
             Collection<TransitionGround> allTrans = problem.getTransitions();
 
-            // Usiamo 100 come soglia perché ora il contatore è estremamente robusto
             if (currentFocusGroup == null || plateauCount > 100) {
                 return allTrans;
             }
